@@ -16,49 +16,51 @@ const {
   preventCommonAttacks,
   mainRateLimit
 } = require('./middleware/security');
+const routes = require('./routes');
 
-// Rutas
-const healthRoutes = require('./routes/health'); // <-- health separado para Railway
-const routes = require('./routes');               // resto de rutas (auth, nd, admin, etc.)
-
-// Crear aplicación Express
+// ==========================================
+// Crear aplicación Express y servidor HTTP
+// ==========================================
 const app = express();
 const server = http.createServer(app);
 
-// *** MUY IMPORTANTE: confiar en proxy ANTES de rate limits / lectura de IP ***
+// *** MUY IMPORTANTE: confiar en proxy ANTES de todo (Railway / Nginx / CF) ***
 app.set('trust proxy', 1);
 
-// --- Middlewares base (orden afinado) ---
-app.use(helmetConfig);                                   // Cabeceras seguras
-app.use(cors(corsOptions));                              // CORS antes de parsers
+// ==========================================
+// Healthcheck mínimo (antes de cualquier middleware)
+// Siempre 200 OK para Railway
+// ==========================================
+app.get('/api/health', (_req, res) => {
+  res.status(200).json({ ok: true, ts: Date.now() });
+});
+
+// ==========================================
+// Middlewares base
+// ==========================================
+app.use(helmetConfig);
+app.use(cors(corsOptions));
 app.use(express.json({ limit: config.server.maxRequestSize }));
 app.use(express.urlencoded({ extended: true, limit: config.server.maxRequestSize }));
 
-// Logging de requests (a archivos/STDOUT según tu logger)
+// Logging de requests
 if (config.logging.enableRequestLogging) {
   app.use(morgan('combined', { stream: logger.stream }));
 }
 
-// Logging de seguridad y checks básicos
+// Middlewares de seguridad adicionales
 app.use(securityLogging);
 app.use(preventCommonAttacks);
 
 // ==========================================
-// Health endpoints primero (liveness 200 OK)
-// ==========================================
-app.use('/api', healthRoutes); // /api/health, /api/ready, etc.
-
-// ==========================================
-// Rate limiting general (después de health)
+// Rate limit general (después de health)
 // ==========================================
 app.use(mainRateLimit);
 
-// =======================
-// Configurar Socket.IO
-// =======================
+// ==========================================
+// Socket.IO
+// ==========================================
 const io = socketIo(server, {
-  // Socket.IO acepta { origin: [...] }, pero tu corsOptions funciona (usa callback por origen).
-  // Si alguna vez falla, cámbialo a { origin: allowedOriginsArray, methods: ['GET','POST'] }.
   cors: corsOptions,
   transports: ['websocket', 'polling']
 });
@@ -75,7 +77,7 @@ io.on('connection', (socket) => {
 
     socket.emit('session-status', {
       status: 'connected',
-      sessionId: sessionId,
+      sessionId,
       message: 'Conectado a la sesión ND',
       timestamp: Date.now()
     });
@@ -118,13 +120,11 @@ function emitStatusUpdate(sessionId, status, message, data = {}) {
     dataKeys: Object.keys(data || {})
   });
 }
-
-// Hacer disponible la función globalmente
 global.emitStatusUpdate = emitStatusUpdate;
 
-// =======================
-// Montar resto de rutas
-// =======================
+// ==========================================
+// Rutas de la aplicación
+// ==========================================
 app.use(routes);
 
 // 404 handler
@@ -132,4 +132,103 @@ app.use((req, res) => {
   res.status(404).json({
     success: false,
     error: 'Not Found',
-    pat
+    path: req.originalUrl
+  });
+});
+
+// Error handler (último)
+app.use((error, req, res, next) => {
+  const errorId = `error_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+  logger.error('Unhandled application error', {
+    errorId,
+    error: error.message,
+    stack: error.stack,
+    url: req.url,
+    method: req.method,
+    ip: req.ip,
+    userAgent: req.get('User-Agent')
+  });
+
+  const errorResponse = {
+    success: false,
+    error: config.server.nodeEnv === 'production' ? 'Error interno del servidor' : error.message,
+    errorId,
+    timestamp: new Date().toISOString()
+  };
+
+  if (config.server.nodeEnv === 'development') {
+    errorResponse.stack = error.stack;
+  }
+
+  res.status(error.status || 500).json(errorResponse);
+});
+
+// Manejo de promesas no capturadas
+process.on('unhandledRejection', (reason, promise) => {
+  logger.error('Unhandled Promise Rejection', {
+    reason: reason instanceof Error ? reason.message : reason,
+    stack: reason instanceof Error ? reason.stack : undefined,
+    promise: promise && promise.toString ? promise.toString() : String(promise)
+  });
+});
+
+process.on('uncaughtException', (error) => {
+  logger.error('Uncaught Exception', {
+    error: error.message,
+    stack: error.stack
+  });
+  setTimeout(() => process.exit(1), 1000);
+});
+
+// ==========================================
+// Start (HOST forzado a 0.0.0.0 en producción)
+// ==========================================
+const PORT = process.env.PORT || config.server.port || 3001;
+const HOST =
+  process.env.NODE_ENV === 'production'
+    ? '0.0.0.0'
+    : (config.server.host || '0.0.0.0');
+
+server.listen(PORT, HOST, () => {
+  logger.info('🧠 ND Assistant Backend Started', {
+    port: PORT,
+    host: HOST,
+    environment: config.server.nodeEnv,
+    nodeVersion: process.version,
+    pid: process.pid
+  });
+
+  logger.info('🌈 Features Enabled', {
+    websockets: config.features.websockets,
+    adminRoutes: config.features.adminRoutes,
+    feedbackCollection: config.features.feedbackCollection,
+    requestLogging: config.logging.enableRequestLogging
+  });
+
+  logger.info('🔑 Services Configuration', {
+    geminiConfigured: !!config.api.geminiApiKey,
+    geminiModel: config.api.geminiModel,
+    frontendUrl: config.frontend.url,
+    corsOrigins: config.frontend.allowedOrigins.length
+  });
+
+  if (config.server.nodeEnv === 'development') {
+    logger.info('🛠️ Development URLs', {
+      api: `http://${HOST}:${PORT}/api`,
+      health: `http://${HOST}:${PORT}/api/health`,
+      admin: `http://${HOST}:${PORT}/api/admin/stats`,
+      docs: `http://${HOST}:${PORT}/api`
+    });
+  }
+
+  if (!config.api.geminiApiKey) {
+    logger.warn('⚠️ Gemini API Key not configured - some features will not work');
+  }
+  if (config.security.adminPassword === 'admin123') {
+    logger.warn('⚠️ Using default admin password - change in production');
+  }
+});
+
+// Exportar para testing
+module.exports = { app, server, io };
