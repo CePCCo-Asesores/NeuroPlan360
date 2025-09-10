@@ -1,0 +1,170 @@
+# ==========================================
+# .dockerignore para NeuroPlan360
+# ==========================================
+
+# Dependencies que se instalan en el contenedor
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json*
+yarn.lock
+
+# Archivos de desarrollo
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env.*
+
+# Logs locales (se crean en runtime)
+logs/*.log
+*.log
+
+# Runtime data
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage directory usado por herramientas como istanbul
+coverage/
+*.lcov
+.nyc_output/
+
+# Cache de dependencias
+.npm
+.eslintcache
+.cache/
+.parcel-cache/
+
+# Archivos temporales
+temp/
+tmp/
+*.tmp
+*.temp
+
+# IDE y editores
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+*.sublime-*
+
+# OS generados
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Docker
+Dockerfile*
+.dockerignore
+docker-compose*.yml
+.docker/
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.travis.yml
+.circleci/
+Jenkinsfile
+
+# Documentación
+README*.md
+CHANGELOG*.md
+LICENSE*
+docs/
+documentation/
+*.md
+
+# Testing
+tests/
+test/
+spec/
+__tests__/
+*.test.js
+*.spec.js
+jest.config.js
+.jest/
+coverage/
+
+# Build outputs
+dist/
+build/
+out/
+public/
+
+# Backup files
+*.bak
+*.backup
+*.old
+
+# Security
+*.pem
+*.key
+*.cert
+*.crt
+
+# Uploads (si los hay)
+uploads/
+media/
+static/
+
+# Scripts de desarrollo
+scripts/
+tools/
+bin/
+.bin/
+
+# Configuración local
+config/local.js
+config/development.js
+config/test.js
+
+# Archivos de monitoreo local
+monitoring/
+grafana/
+prometheus/
+
+# Archivos de base de datos local
+*.db
+*.sqlite
+*.sqlite3
+
+# Terraform y otros IaC
+*.tfstate
+*.tfvars
+terraform/
+
+# Kubernetes
+k8s/
+kubernetes/
+*.yaml
+*.yml
+
+# Helm
+charts/
+helm/
+
+# Varios
+.editorconfig
+.eslintrc*
+.prettierrc*
+.babelrc*
+webpack.config.js
+rollup.config.js
+tsconfig.json
