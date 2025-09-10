@@ -1,0 +1,281 @@
+# 📡 API Documentation - ND Assistant Backend
+
+## 🎯 Endpoints Principales
+
+### POST /api/generate-nd-plan
+Genera un plan neurodivergente personalizado.
+
+**Request Body:**
+```json
+{
+  "userType": "teacher|therapist|parent|doctor|mixed|other",
+  "customRole": "string (opcional, requerido si userType es 'mixed' o 'other')",
+  "neurodiversities": ["tdah", "autism", "dyslexia", ...],
+  "priorityND": "string (opcional)",
+  "menuOption": "adapt|create|review|consult|evaluate|universal",
+  "activityDescription": "string (requerido para adapt/review/consult)",
+  "theme": "string (requerido para create)",
+  "objectives": "string (requerido para create)",
+  "ageGroup": "string (requerido)",
+  "sensitivities": "string (opcional)",
+  "skillsCheck": boolean,
+  "environments": ["Casa", "Escuela/Trabajo", "Espacios públicos"],
+  "caregivers": boolean,
+  "timeConstraints": "string (opcional)",
+  "urgentAspects": "string (opcional)",
+  "outputFormat": "practical|complete|ndplus|sensory|traffic"
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "sessionId": "nd_session_1234567890_abc123",
+  "data": {
+    "title": "Plan Neurodivergente: TDAH",
+    "userType": "teacher",
+    "neurodiversities": ["tdah"],
+    "outputFormat": "complete",
+    "sections": [
+      {
+        "id": "comprension",
+        "title": "Comprensión ND",
+        "icon": "🧠",
+        "content": "...",
+        "order": 1
+      }
+    ],
+    "implementationReady": true,
+    "ethicallyApproved": true,
+    "generatedAt": "2024-01-01T12:00:00Z"
+  },
+  "metadata": {
+    "timestamp": 1234567890,
+    "processingTime": 2500,
+    "geminiResponseTime": 1800
+  }
+}
+```
+
+### GET /api/session/:sessionId
+Obtiene información de una sesión existente.
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "sessionId": "nd_session_1234567890_abc123",
+    "userType": "teacher",
+    "neurodiversities": ["tdah"],
+    "timestamp": 1234567890,
+    "age": 300000,
+    "isActive": true
+  }
+}
+```
+
+### POST /api/feedback
+Envía feedback sobre un plan generado.
+
+**Request Body:**
+```json
+{
+  "sessionId": "nd_session_1234567890_abc123",
+  "rating": 5,
+  "comments": "Excelente plan, muy útil",
+  "helpfulSections": ["comprension", "implementacion"],
+  "improvements": "Más ejemplos visuales"
+}
+```
+
+### GET /api/neurodiversities
+Lista todas las neurodiversidades soportadas.
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": "tdah",
+      "label": "TDAH",
+      "principles": ["..."],
+      "strengths": ["..."],
+      "considerations": ["..."]
+    }
+  ]
+}
+```
+
+## 🏥 Health Checks
+
+### GET /api/health
+Health check básico.
+
+### GET /api/health/detailed
+Health check completo con test de Gemini.
+
+### GET /api/ready
+Readiness probe para Kubernetes.
+
+### GET /api/live
+Liveness probe para Kubernetes.
+
+## 🛡️ Admin Endpoints
+
+Requieren autenticación: `Authorization: Bearer {ADMIN_PASSWORD}`
+
+### GET /api/admin/stats
+Estadísticas del sistema.
+
+### GET /api/admin/sessions
+Lista de sesiones activas.
+
+### DELETE /api/admin/sessions/:sessionId
+Elimina una sesión específica.
+
+### POST /api/admin/cleanup
+Limpia sesiones antiguas.
+
+## ⚠️ Error Responses
+
+Todas las respuestas de error siguen este formato:
+
+```json
+{
+  "success": false,
+  "error": "Descripción del error",
+  "details": ["Array de detalles específicos"],
+  "timestamp": "2024-01-01T12:00:00Z"
+}
+```
+
+### Códigos de Estado HTTP
+
+- `200` - Éxito
+- `400` - Bad Request (datos inválidos)
+- `401` - Unauthorized (admin sin auth)
+- `403` - Forbidden (contenido bloqueado)
+- `404` - Not Found (sesión/recurso no encontrado)
+- `413` - Payload Too Large
+- `429` - Too Many Requests (rate limit)
+- `500` - Internal Server Error
+
+## 🔐 Rate Limits
+
+- **General**: 100 requests / 15 minutos
+- **Generación**: 10 planes / 15 minutos
+- **Admin**: 20 requests / 15 minutos
+
+## 🌐 WebSockets
+
+Conectar a: `ws://localhost:3001`
+
+**Events:**
+- `join-session` - Unirse a una sesión específica
+- `status-update` - Recibir actualizaciones de estado
+- `generation-status` - Estado de generación de planes
+
+**Ejemplo:**
+```javascript
+const socket = io('http://localhost:3001');
+socket.emit('join-session', sessionId);
+socket.on('status-update', (data) => {
+  console.log('Estado:', data.status, data.message);
+});
+```
+
+## 📋 Validaciones
+
+### UserType
+- `teacher`, `therapist`, `parent`, `doctor`, `mixed`, `other`
+
+### Neurodiversities
+- `tdah`, `autism`, `dyslexia`, `dyscalculia`, `dysgraphia`
+- `giftedness`, `tourette`, `dyspraxia`, `sensory`, `anxiety`
+- `none`, `other`, `unsure`
+
+### MenuOptions
+- `adapt` - Adaptar actividad existente
+- `create` - Crear desde cero
+- `review` - Revisar algo que no funcionó
+- `consult` - Consultar situación específica
+- `evaluate` - Evaluar neurodiversidad
+- `universal` - Diseño universal preventivo
+
+### OutputFormats
+- `practical` - Versión práctica (5 min)
+- `complete` - Versión completa (15 min)
+- `ndplus` - ND Plus con capacitación (25 min)
+- `sensory` - Enfoque sensorial (20 min)
+- `traffic` - Semáforo ND (10 min)
+
+## 🔄 Estados de WebSocket
+
+- `processing` - Iniciando procesamiento
+- `generating` - Consultando Gemini
+- `structuring` - Organizando respuesta
+- `complete` - Completado exitosamente
+- `error` - Error en el proceso
+
+## 📊 Métricas Disponibles
+
+### GET /api/metrics
+Métricas en formato Prometheus:
+
+```
+nodejs_uptime_seconds 3600
+nodejs_memory_heap_used_bytes 52428800
+nodejs_memory_heap_total_bytes 67108864
+```
+
+## 🛠️ Desarrollo
+
+### Configuración Local
+```bash
+cp .env.example .env
+npm install
+npm run dev
+```
+
+### Testing
+```bash
+npm test
+npm run test:watch
+npm run test:coverage
+```
+
+### Docker
+```bash
+docker-compose up -d
+```
+
+## 🌟 Ejemplos de Uso
+
+### Generar Plan para TDAH
+```bash
+curl -X POST http://localhost:3001/api/generate-nd-plan \
+  -H "Content-Type: application/json" \
+  -d '{
+    "userType": "teacher",
+    "neurodiversities": ["tdah"],
+    "menuOption": "create",
+    "theme": "matemáticas básicas",
+    "objectives": "enseñar sumas simples",
+    "ageGroup": "6-8 años",
+    "outputFormat": "complete"
+  }'
+```
+
+### Verificar Salud del Sistema
+```bash
+curl http://localhost:3001/api/health/detailed
+```
+
+### Obtener Estadísticas (Admin)
+```bash
+curl -H "Authorization: Bearer tu_admin_password" \
+  http://localhost:3001/api/admin/stats
+```

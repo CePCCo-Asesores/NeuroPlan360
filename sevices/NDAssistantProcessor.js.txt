@@ -1,0 +1,1059 @@
+const { GoogleGenerativeAI } = require('@google/generative-ai');
+const config = require('../config');
+const logger = require('../config/logger');
+
+class NDAssistantProcessor {
+  constructor() {
+    this.conversationalMemory = new Map();
+    this.operationStats = {
+      totalRequests: 0,
+      successfulRequests: 0,
+      failedRequests: 0,
+      totalResponseTime: 0,
+      geminiCalls: 0,
+      geminiErrors: 0,
+      startTime: Date.now()
+    };
+
+    // Inicializar Gemini
+    if (config.api.geminiApiKey) {
+      this.genAI = new GoogleGenerativeAI(config.api.geminiApiKey);
+      this.model = this.genAI.getGenerativeModel({ 
+        model: config.api.geminiModel,
+        safetySettings: config.gemini.safetySettings,
+        generationConfig: config.gemini.generationConfig
+      });
+    } else {
+      logger.warn('Gemini API key not configured');
+    }
+
+    this.userTypeLanguageMap = {
+      teacher: {
+        terms: ['estudiantes', 'aula', 'lecciones'],
+        context: 'educativo escolar'
+      },
+      therapist: {
+        terms: ['clientes', 'pacientes', 'sesiones'],
+        context: 'terapéutico'
+      },
+      parent: {
+        terms: ['hijos', 'familia', 'rutinas cotidianas'],
+        context: 'familiar'
+      },
+      doctor: {
+        terms: ['pacientes', 'consultorio', 'tratamientos'],
+        context: 'médico'
+      },
+      mixed: {
+        terms: ['personas', 'actividades', 'intervenciones'],
+        context: 'múltiple'
+      },
+      other: {
+        terms: ['personas atendidas', 'actividades', 'intervenciones'],
+        context: 'personalizado'
+      }
+    };
+
+    this.ndAdaptations = {
+      tdah: {
+        principles: [
+          'Instrucciones cortas y secuenciales',
+          'Opciones de movimiento integradas',
+          'Breaks sensoriales programados',
+          'Sistemas de recompensa inmediata'
+        ],
+        strengths: [
+          'Creatividad',
+          'Pensamiento divergente',
+          'Energía alta',
+          'Capacidad multitarea'
+        ],
+        considerations: [
+          'Atención fluctuante',
+          'Necesidad de movimiento',
+          'Sensibilidad a distracciones'
+        ]
+      },
+      autism: {
+        principles: [
+          'Predictibilidad y rutinas claras',
+          'Opciones de comunicación alternativa',
+          'Consideraciones sensoriales detalladas',
+          'Tiempo de procesamiento extra'
+        ],
+        strengths: [
+          'Atención al detalle',
+          'Pensamiento sistemático',
+          'Honestidad',
+          'Intereses especializados'
+        ],
+        considerations: [
+          'Procesamiento sensorial único',
+          'Necesidad de predictibilidad',
+          'Comunicación directa'
+        ]
+      },
+      dyslexia: {
+        principles: [
+          'Apoyos visuales no textuales',
+          'Instrucciones auditivas opcionales',
+          'Formatos alternativos de información',
+          'Validación de comprensión frecuente'
+        ],
+        strengths: [
+          'Pensamiento espacial',
+          'Creatividad',
+          'Resolución de problemas',
+          'Visión global'
+        ],
+        considerations: [
+          'Dificultades de decodificación',
+          'Fatiga cognitiva',
+          'Autoestima académica'
+        ]
+      },
+      dyscalculia: {
+        principles: [
+          'Representaciones visuales de números',
+          'Manipulativos concretos',
+          'Descomposición paso a paso',
+          'Conexiones con experiencias reales'
+        ],
+        strengths: [
+          'Pensamiento holístico',
+          'Creatividad',
+          'Intuición',
+          'Habilidades verbales'
+        ],
+        considerations: [
+          'Ansiedad matemática',
+          'Conceptos abstractos',
+          'Secuenciación numérica'
+        ]
+      },
+      dysgraphia: {
+        principles: [
+          'Alternativas a escritura manual',
+          'Organizadores gráficos',
+          'Tiempo extra',
+          'Opciones tecnológicas'
+        ],
+        strengths: [
+          'Comunicación oral',
+          'Pensamiento creativo',
+          'Comprensión conceptual'
+        ],
+        considerations: [
+          'Fatiga motora',
+          'Organización espacial',
+          'Velocidad de procesamiento'
+        ]
+      },
+      giftedness: {
+        principles: [
+          'Aceleración y enriquecimiento',
+          'Proyectos autodirigidos',
+          'Complejidad apropiada',
+          'Conexiones interdisciplinarias'
+        ],
+        strengths: [
+          'Aprendizaje rápido',
+          'Pensamiento abstracto',
+          'Curiosidad intelectual',
+          'Creatividad avanzada'
+        ],
+        considerations: [
+          'Perfeccionismo',
+          'Asincronía de desarrollo',
+          'Intensidad emocional'
+        ]
+      },
+      tourette: {
+        principles: [
+          'Ambiente sin juicios',
+          'Breaks cuando sea necesario',
+          'Educación a pares',
+          'Estrategias de autorregulación'
+        ],
+        strengths: [
+          'Resilencia',
+          'Creatividad',
+          'Empatía',
+          'Determinación'
+        ],
+        considerations: [
+          'Variabilidad de tics',
+          'Fatiga',
+          'Ansiedad social'
+        ]
+      },
+      dyspraxia: {
+        principles: [
+          'Descomposición de tareas motoras',
+          'Práctica repetitiva',
+          'Apoyos visuales para secuencias',
+          'Alternativas a escritura'
+        ],
+        strengths: [
+          'Determinación',
+          'Creatividad',
+          'Empatía',
+          'Pensamiento estratégico'
+        ],
+        considerations: [
+          'Coordinación motora',
+          'Planificación secuencial',
+          'Fatiga física'
+        ]
+      },
+      sensory: {
+        principles: [
+          'Evaluación sensorial completa',
+          'Ambiente adaptado',
+          'Herramientas de autorregulación',
+          'Descansos sensoriales'
+        ],
+        strengths: [
+          'Conciencia sensorial aguda',
+          'Creatividad',
+          'Atención al detalle'
+        ],
+        considerations: [
+          'Sobrecarga sensorial',
+          'Variabilidad diaria',
+          'Necesidades individuales'
+        ]
+      },
+      anxiety: {
+        principles: [
+          'Ambiente predecible y seguro',
+          'Opciones de escape/descanso',
+          'Preparación previa detallada',
+          'Técnicas de regulación'
+        ],
+        strengths: [
+          'Consciencia',
+          'Preparación',
+          'Empatía',
+          'Motivación para el éxito'
+        ],
+        considerations: [
+          'Evitación',
+          'Síntomas físicos',
+          'Perfeccionismo'
+        ]
+      }
+    };
+
+    // Inicializar limpieza automática
+    this.startMemoryCleanup();
+  }
+
+  // Método principal para procesar solicitudes ND
+  async processNDRequest(requestData) {
+    const startTime = Date.now();
+    let sessionId = null;
+
+    try {
+      this.operationStats.totalRequests++;
+      
+      // Generar sessionId único
+      sessionId = this.generateSessionId();
+      
+      // Almacenar en memoria conversacional
+      this.conversationalMemory.set(sessionId, {
+        ...requestData,
+        timestamp: Date.now(),
+        adaptations: this.getRelevantAdaptations(requestData.neurodiversities)
+      });
+
+      logger.ndOperation('process_nd_request_start', sessionId, requestData.userType, requestData.neurodiversities, {
+        menuOption: requestData.menuOption,
+        outputFormat: requestData.outputFormat
+      });
+
+      // Construir prompt completo
+      const fullPrompt = this.buildCompletePrompt(requestData, sessionId);
+      
+      // Generar respuesta con Gemini
+      const geminiStartTime = Date.now();
+      this.operationStats.geminiCalls++;
+      
+      const result = await this.callGeminiWithRetry(fullPrompt, config.gemini.maxRetries);
+      const geminiResponseTime = Date.now() - geminiStartTime;
+      
+      logger.geminiCall(fullPrompt, result.length, geminiResponseTime, true);
+
+      // Procesar y estructurar respuesta
+      const structuredResult = this.structureResponse(result, requestData, sessionId);
+
+      const totalProcessingTime = Date.now() - startTime;
+      this.operationStats.successfulRequests++;
+      this.operationStats.totalResponseTime += totalProcessingTime;
+
+      logger.ndOperation('process_nd_request_success', sessionId, requestData.userType, requestData.neurodiversities, {
+        processingTime: `${totalProcessingTime}ms`,
+        geminiResponseTime: `${geminiResponseTime}ms`,
+        sectionsGenerated: structuredResult.sections?.length || 0
+      });
+
+      return {
+        success: true,
+        sessionId,
+        data: structuredResult,
+        metadata: {
+          timestamp: Date.now(),
+          userType: requestData.userType,
+          neurodiversities: requestData.neurodiversities,
+          outputFormat: requestData.outputFormat,
+          processingTime: totalProcessingTime,
+          geminiResponseTime
+        }
+      };
+
+    } catch (error) {
+      this.operationStats.failedRequests++;
+      
+      if (error.name === 'GeminiError') {
+        this.operationStats.geminiErrors++;
+      }
+
+      const processingTime = Date.now() - startTime;
+      this.operationStats.totalResponseTime += processingTime;
+
+      logger.ndError(error, sessionId, {
+        processingTime: `${processingTime}ms`,
+        requestData: requestData
+      });
+
+      return {
+        success: false,
+        error: this.getErrorMessage(error),
+        sessionId,
+        details: config.server.nodeEnv === 'development' ? {
+          originalError: error.message,
+          stack: error.stack
+        } : undefined,
+        metadata: {
+          timestamp: Date.now(),
+          processingTime
+        }
+      };
+    }
+  }
+
+  // Llamada a Gemini con reintentos
+  async callGeminiWithRetry(prompt, maxRetries = 3) {
+    if (!this.model) {
+      throw new Error('Gemini no está configurado correctamente');
+    }
+
+    let lastError;
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const result = await Promise.race([
+          this.model.generateContent(prompt),
+          new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Timeout')), config.gemini.timeoutMs)
+          )
+        ]);
+        
+        const response = await result.response;
+        return response.text();
+        
+      } catch (error) {
+        lastError = error;
+        
+        logger.warn(`Gemini call attempt ${attempt} failed`, {
+          error: error.message,
+          attempt,
+          maxRetries,
+          promptLength: prompt.length
+        });
+
+        if (attempt < maxRetries) {
+          // Esperar antes del siguiente intento
+          const delay = Math.pow(2, attempt) * 1000; // Exponential backoff
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
+      }
+    }
+
+    const geminiError = new Error(`Gemini failed after ${maxRetries} attempts: ${lastError.message}`);
+    geminiError.name = 'GeminiError';
+    throw geminiError;
+  }
+
+  // Construir el prompt completo
+  buildCompletePrompt(data, sessionId) {
+    const userLanguage = this.userTypeLanguageMap[data.userType] || this.userTypeLanguageMap.other;
+    const adaptationDetails = this.getDetailedAdaptations(data.neurodiversities);
+    
+    return `# ASISTENTE DE PLANEACIÓN INCLUSIVA Y NEURODIVERGENTE (VERSIÓN MAESTRA ND)
+
+## 1. ROL Y OBJETIVO PRINCIPAL
+
+Actuarás como un Asistente de Planeación Inclusiva y Neurodivergente, experto en Diseño Universal para el Aprendizaje (DUA) y adaptaciones para personas neurodivergentes. Tu misión es guiar usuarios a través de un diálogo inteligente para crear o adaptar actividades que honren y potencien la neurodiversidad.
+
+CONTEXTO DEL USUARIO ACTUAL:
+- Tipo de usuario: ${this.getUserTypeDescription(data.userType, data.customRole)}
+- Neurodiversidades presentes: ${data.neurodiversities.map(nd => this.getNeurodiversityLabel(nd)).join(', ')}
+- Prioridad: ${data.priorityND ? this.getNeurodiversityLabel(data.priorityND) : 'Enfoque integrado'}
+- Objetivo: ${this.getMenuOptionDescription(data.menuOption)}
+
+PRINCIPIO ND CLAVE:  
+La neurodiversidad es una variación natural del cerebro humano. Nunca se trata como déficit. Toda propuesta debe ser afirmativa, sensorialmente consciente y éticamente defendible.
+
+## 2. INFORMACIÓN ESPECÍFICA DE LA SOLICITUD
+
+DETALLES DE LA ACTIVIDAD:
+${this.buildActivityDetails(data)}
+
+PERSONALIZACIÓN AVANZADA:
+- Sensibilidades sensoriales: ${data.sensitivities || 'No especificadas'}
+- Verificación de habilidades: ${data.skillsCheck ? 'Sí incluir' : 'No necesaria'}
+- Entornos requeridos: ${data.environments?.length > 0 ? data.environments.join(', ') : 'No especificado'}
+- Material para cuidadores: ${data.caregivers ? 'Sí incluir' : 'No necesario'}
+- Limitaciones de tiempo: ${data.timeConstraints || 'Flexibles'}
+- Aspectos urgentes: ${data.urgentAspects || 'Ninguno especificado'}
+
+FORMATO SOLICITADO: ${this.getOutputFormatDescription(data.outputFormat)}
+
+## 3. ADAPTACIONES NEURODIVERGENTE-ESPECÍFICAS
+
+${adaptationDetails}
+
+## 4. INSTRUCCIONES DE GENERACIÓN
+
+Genera una respuesta completa siguiendo exactamente esta estructura:
+
+### SECCIÓN 1: COMPRENSIÓN ND
+- Explica brevemente cómo esta propuesta honra la neurodiversidad específica mencionada
+- Destaca las fortalezas únicas que se potencian
+- Usa lenguaje completamente afirmativo
+
+### SECCIÓN 2: EVALUACIONES PREVIAS
+- **Evaluación sensorial**: Pruebas rápidas específicas para las sensibilidades mencionadas
+- **Evaluación de habilidades**: ${data.skillsCheck ? 'Verificaciones simples del nivel actual apropiadas para la edad/grupo' : 'No solicitada, pero menciona brevemente qué observar'}
+- **Evaluación ambiental**: Consideraciones específicas del entorno
+
+### SECCIÓN 3: IMPLEMENTACIÓN PASO A PASO
+Para el formato "${data.outputFormat}", incluye:
+- **Objetivo neurodivergente-específico** adaptado al tipo de usuario
+- **Materiales necesarios** (incluye opciones sensoriales múltiples y alternativas de bajos recursos)
+- **Preparación del entorno** considerando las neurodiversidades presentes
+- **Instrucciones claras paso a paso** adaptadas al estilo de procesamiento neurológico
+- **Señales/apoyos visuales** específicos y descripción de cómo crearlos
+- **Tiempo estimado realista** por fase, considerando la neurodiversidad
+
+### SECCIÓN 4: GENERALIZACIÓN OBLIGATORIA
+- **Para el hogar**: Adaptaciones específicas para uso doméstico
+- **Para la escuela/trabajo**: Adaptaciones institucionales
+- **Para espacios públicos**: Estrategias portátiles y herramientas discretas
+- **Pictogramas/herramientas portátiles**: Descripción específica y cómo obtenerlos
+
+### SECCIÓN 5: CAPACITACIÓN DE CUIDADORES
+- **Hoja de instrucciones resumida**: Lista exacta de pasos para compartir (máximo 1 página)
+- **Palabras/frases clave**: Consensuadas para consistencia
+- **Qué observar**: Indicadores específicos de progreso
+- **Cuándo pedir ayuda**: Señales de alarma o necesidad de apoyo profesional
+
+### SECCIÓN 6: TECNOLOGÍA NEURODIVERGENTE
+- **Prompts específicos para IA**: Prompts exactos para generar imágenes/materiales
+- **Apps recomendadas**: Gratuitas y específicas para cada neurodiversidad
+- **Herramientas de comunicación**: Según las necesidades identificadas
+
+## 5. CRITERIOS DE CALIDAD
+
+- Todo debe ser inmediatamente implementable
+- Lenguaje adaptado exactamente al tipo de usuario (${userLanguage.terms.join(', ')})
+- Consideraciones sensoriales integradas automáticamente
+- Cronogramas realistas basados en la neurodiversidad específica
+- Material listo para compartir con otros cuidadores
+- Enfoque completamente afirmativo de la neurodiversidad
+
+## 6. RESTRICCIONES IMPORTANTES
+
+- NUNCA uses lenguaje de déficit o patología
+- SIEMPRE incluye las 6 secciones completas
+- Adapta la complejidad al grupo de edad especificado: ${data.ageGroup}
+- Incluye derivación ética si el caso excede el alcance general
+- Proporciona alternativas para diferentes niveles de recursos
+
+GENERA AHORA LA RESPUESTA COMPLETA SIGUIENDO EXACTAMENTE ESTA ESTRUCTURA.`;
+  }
+
+  // Métodos auxiliares para construcción del prompt
+  getUserTypeDescription(userType, customRole) {
+    const baseTypes = {
+      teacher: 'Docente',
+      therapist: 'Terapeuta', 
+      parent: 'Padre/Madre',
+      doctor: 'Médico',
+      mixed: 'Rol mixto',
+      other: 'Otro rol'
+    };
+    
+    let description = baseTypes[userType] || 'Usuario';
+    if (customRole) description += ` (${customRole})`;
+    return description;
+  }
+
+  getNeurodiversityLabel(ndId) {
+    const labels = {
+      tdah: 'TDAH',
+      autism: 'Autismo',
+      dyslexia: 'Dislexia',
+      dyscalculia: 'Discalculia',
+      dysgraphia: 'Disgrafía',
+      giftedness: 'Altas Capacidades',
+      tourette: 'Síndrome de Tourette',
+      dyspraxia: 'Dispraxia',
+      sensory: 'Procesamiento Sensorial',
+      anxiety: 'Ansiedad',
+      none: 'Sin neurodiversidad específica',
+      other: 'Otra',
+      unsure: 'Por identificar'
+    };
+    return labels[ndId] || ndId;
+  }
+
+  getMenuOptionDescription(menuOption) {
+    const options = {
+      adapt: 'Adaptar actividad existente',
+      create: 'Crear actividad desde cero',
+      review: 'Revisar algo que no funcionó',
+      consult: 'Consultar situación específica',
+      evaluate: 'Evaluar neurodiversidad',
+      universal: 'Diseño universal preventivo'
+    };
+    return options[menuOption] || menuOption;
+  }
+
+  buildActivityDetails(data) {
+    let details = [];
+    
+    if (data.activityDescription) {
+      details.push(`Actividad/Situación actual: ${data.activityDescription}`);
+    }
+    
+    if (data.theme) {
+      details.push(`Tema principal: ${data.theme}`);
+    }
+    
+    if (data.objectives) {
+      details.push(`Objetivos: ${data.objectives}`);
+    }
+    
+    if (data.ageGroup) {
+      details.push(`Edad/Grupo objetivo: ${data.ageGroup}`);
+    }
+    
+    return details.join('\n') || 'No se proporcionaron detalles específicos';
+  }
+
+  getOutputFormatDescription(format) {
+    const formats = {
+      practical: 'Versión Práctica - Lista para usar hoy mismo',
+      complete: 'Versión Completa - Adaptaciones para diferentes situaciones',
+      ndplus: 'Versión ND Plus - Generalización + capacitación + cronograma',
+      sensory: 'Versión Sensorial - Enfoque especial en adaptaciones sensoriales',
+      traffic: 'Versión Semáforo ND - Verde = listo, Amarillo = ajustar, Rojo = no viable'
+    };
+    return formats[format] || format;
+  }
+
+  getDetailedAdaptations(neurodiversities) {
+    let adaptationText = '';
+    
+    neurodiversities.forEach(nd => {
+      if (this.ndAdaptations[nd]) {
+        const adaptation = this.ndAdaptations[nd];
+        adaptationText += `
+### ADAPTACIONES PARA ${this.getNeurodiversityLabel(nd).toUpperCase()}:
+
+**Principios clave:**
+${adaptation.principles.map(p => `- ${p}`).join('\n')}
+
+**Fortalezas a potenciar:**
+${adaptation.strengths.map(s => `- ${s}`).join('\n')}
+
+**Consideraciones especiales:**
+${adaptation.considerations.map(c => `- ${c}`).join('\n')}
+`;
+      }
+    });
+    
+    return adaptationText || 'Adaptaciones generales de diseño universal aplicables.';
+  }
+
+  getRelevantAdaptations(neurodiversities) {
+    return neurodiversities.map(nd => ({
+      type: nd,
+      label: this.getNeurodiversityLabel(nd),
+      adaptations: this.ndAdaptations[nd] || null
+    }));
+  }
+
+  // Estructurar la respuesta de Gemini
+  structureResponse(generatedContent, requestData, sessionId) {
+    const sections = this.extractSections(generatedContent);
+    
+    return {
+      title: `Plan Neurodivergente: ${requestData.neurodiversities.map(nd => this.getNeurodiversityLabel(nd)).join(', ')}`,
+      userType: requestData.userType,
+      neurodiversities: requestData.neurodiversities,
+      outputFormat: requestData.outputFormat,
+      sections: sections,
+      fullContent: generatedContent,
+      implementationReady: true,
+      ethicallyApproved: this.validateEthicalContent(generatedContent),
+      generatedAt: new Date().toISOString(),
+      sessionId: sessionId
+    };
+  }
+
+  extractSections(content) {
+    const sections = [];
+    const sectionPatterns = [
+      { id: 'comprension', title: 'Comprensión ND', icon: '🧠' },
+      { id: 'evaluaciones', title: 'Evaluaciones Previas', icon: '🔍' },
+      { id: 'implementacion', title: 'Implementación', icon: '⚡' },
+      { id: 'generalizacion', title: 'Generalización', icon: '🌍' },
+      { id: 'capacitacion', title: 'Capacitación', icon: '👥' },
+      { id: 'tecnologia', title: 'Tecnología ND', icon: '💻' }
+    ];
+
+    sectionPatterns.forEach(pattern => {
+      const regex = new RegExp(`### SECCIÓN \\d+: ${pattern.title.toUpperCase()}([\\s\\S]*?)(?=### SECCIÓN \\d+:|$)`, 'i');
+      const match = content.match(regex);
+      
+      if (match) {
+        sections.push({
+          id: pattern.id,
+          title: pattern.title,
+          icon: pattern.icon,
+          content: match[1].trim(),
+          order: sections.length + 1
+        });
+      } else {
+        // Fallback: buscar por título sin número de sección
+        const fallbackRegex = new RegExp(`${pattern.title}([\\s\\S]*?)(?=(?:Comprensión ND|Evaluaciones Previas|Implementación|Generalización|Capacitación|Tecnología ND)|$)`, 'i');
+        const fallbackMatch = content.match(fallbackRegex);
+        
+        if (fallbackMatch) {
+          sections.push({
+            id: pattern.id,
+            title: pattern.title,
+            icon: pattern.icon,
+            content: fallbackMatch[1].trim(),
+            order: sections.length + 1
+          });
+        }
+      }
+    });
+
+    // Si no se pudieron extraer secciones, crear una sección general
+    if (sections.length === 0) {
+      sections.push({
+        id: 'general',
+        title: 'Plan Completo',
+        icon: '📋',
+        content: content,
+        order: 1
+      });
+    }
+
+    return sections;
+  }
+
+  validateEthicalContent(content) {
+    const prohibitedTerms = [
+      'déficit', 'trastorno', 'discapacidad', 'anormal', 'problema',
+      'carencia', 'limitación', 'deficiencia', 'impedimento'
+    ];
+    
+    const lowerContent = content.toLowerCase();
+    return !prohibitedTerms.some(term => lowerContent.includes(term));
+  }
+
+  generateSessionId() {
+    return `nd_session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  }
+
+  // Método para recuperar memoria conversacional
+  getConversationalMemory(sessionId) {
+    return this.conversationalMemory.get(sessionId);
+  }
+
+  // Procesar feedback para mejora continua
+  async processFeedback(feedbackData) {
+    try {
+      // En una implementación completa, esto se almacenaría en base de datos
+      logger.info('Processing feedback for improvement', {
+        sessionId: feedbackData.sessionId,
+        rating: feedbackData.rating,
+        hasComments: !!feedbackData.comments,
+        helpfulSectionsCount: feedbackData.helpfulSections?.length || 0
+      });
+
+      // Aquí se podría implementar lógica para ajustar el modelo basándose en feedback
+      return {
+        processed: true,
+        timestamp: new Date().toISOString()
+      };
+    } catch (error) {
+      logger.error('Error processing feedback', {
+        error: error.message,
+        sessionId: feedbackData.sessionId
+      });
+      throw error;
+    }
+  }
+
+  // Generar datos de exportación
+  async generateExportData(sessionId, format = 'json') {
+    const sessionData = this.getConversationalMemory(sessionId);
+    if (!sessionData) {
+      throw new Error('Sesión no encontrada');
+    }
+
+    return {
+      title: `Plan ND - ${sessionData.neurodiversities.map(nd => this.getNeurodiversityLabel(nd)).join(', ')}`,
+      generatedAt: new Date().toISOString(),
+      format: format,
+      userProfile: {
+        type: sessionData.userType,
+        customRole: sessionData.customRole
+      },
+      neurodiversityProfile: {
+        types: sessionData.neurodiversities,
+        priority: sessionData.priorityND,
+        adaptations: sessionData.adaptations
+      },
+      activity: {
+        description: sessionData.activityDescription,
+        theme: sessionData.theme,
+        objectives: sessionData.objectives,
+        ageGroup: sessionData.ageGroup
+      },
+      personalizations: {
+        sensitivities: sessionData.sensitivities,
+        environments: sessionData.environments,
+        caregivers: sessionData.caregivers,
+        timeConstraints: sessionData.timeConstraints,
+        urgentAspects: sessionData.urgentAspects
+      },
+      outputFormat: sessionData.outputFormat,
+      sessionId: sessionId
+    };
+  }
+
+  // Obtener información de neurodiversidades
+  getNeurodiversityInfo() {
+    return Object.keys(this.ndAdaptations).map(key => ({
+      id: key,
+      label: this.getNeurodiversityLabel(key),
+      principles: this.ndAdaptations[key].principles,
+      strengths: this.ndAdaptations[key].strengths,
+      considerations: this.ndAdaptations[key].considerations
+    }));
+  }
+
+  // Validar configuración del usuario
+  validateUserConfiguration(data) {
+    const validation = {
+      isValid: true,
+      warnings: [],
+      recommendations: []
+    };
+
+    // Verificar compatibilidad de neurodiversidades
+    if (data.neurodiversities.length > 3) {
+      validation.warnings.push('Muchas neurodiversidades seleccionadas. Considera priorizar una o dos principales.');
+    }
+
+    // Verificar coherencia entre tipo de usuario y objetivo
+    if (data.userType === 'parent' && data.menuOption === 'evaluate') {
+      validation.recommendations.push('Para evaluación de neurodiversidad, considera consultar con un profesional.');
+    }
+
+    return validation;
+  }
+
+  // Obtener sugerencias por neurodiversidad
+  getSuggestionsByNeurodiversity(neurodiversity) {
+    const adaptation = this.ndAdaptations[neurodiversity];
+    if (!adaptation) return null;
+
+    return {
+      neurodiversity: neurodiversity,
+      label: this.getNeurodiversityLabel(neurodiversity),
+      principles: adaptation.principles,
+      strengths: adaptation.strengths,
+      considerations: adaptation.considerations,
+      activities: [
+        'Actividades con movimiento integrado',
+        'Tareas con retroalimentación inmediata',
+        'Proyectos creativos autodirigidos',
+        'Ejercicios de autorregulación sensorial'
+      ]
+    };
+  }
+
+  getAvailableNeurodiversities() {
+    return Object.keys(this.ndAdaptations);
+  }
+
+  // Métodos para estadísticas
+  getOperationStats() {
+    return {
+      ...this.operationStats,
+      averageResponseTime: this.operationStats.totalRequests > 0 ? 
+        Math.round(this.operationStats.totalResponseTime / this.operationStats.totalRequests) : 0,
+      successRate: this.operationStats.totalRequests > 0 ?
+        Math.round((this.operationStats.successfulRequests / this.operationStats.totalRequests) * 100) : 0,
+      errorRate: this.operationStats.totalRequests > 0 ?
+        Math.round((this.operationStats.failedRequests / this.operationStats.totalRequests) * 100) : 0,
+      geminiSuccessRate: this.operationStats.geminiCalls > 0 ?
+        Math.round(((this.operationStats.geminiCalls - this.operationStats.geminiErrors) / this.operationStats.geminiCalls) * 100) : 0
+    };
+  }
+
+  getAverageResponseTime() {
+    return this.operationStats.totalRequests > 0 ? 
+      Math.round(this.operationStats.totalResponseTime / this.operationStats.totalRequests) : 0;
+  }
+
+  getTotalRequests() {
+    return this.operationStats.totalRequests;
+  }
+
+  getErrorRate() {
+    return this.operationStats.totalRequests > 0 ?
+      Math.round((this.operationStats.failedRequests / this.operationStats.totalRequests) * 100) : 0;
+  }
+
+  getSuccessRate() {
+    return this.operationStats.totalRequests > 0 ?
+      Math.round((this.operationStats.successfulRequests / this.operationStats.totalRequests) * 100) : 0;
+  }
+
+  resetStats() {
+    this.operationStats = {
+      totalRequests: 0,
+      successfulRequests: 0,
+      failedRequests: 0,
+      totalResponseTime: 0,
+      geminiCalls: 0,
+      geminiErrors: 0,
+      startTime: Date.now()
+    };
+    
+    logger.info('Statistics reset', {
+      timestamp: new Date().toISOString()
+    });
+  }
+
+  // Limpiar memoria antigua
+  cleanOldMemory() {
+    const cutoffTime = Date.now() - config.memory.maxSessionAge;
+    let cleanedCount = 0;
+
+    for (const [sessionId, data] of this.conversationalMemory.entries()) {
+      if (data.timestamp < cutoffTime) {
+        this.conversationalMemory.delete(sessionId);
+        cleanedCount++;
+      }
+    }
+
+    if (cleanedCount > 0) {
+      logger.info('Memory cleanup completed', {
+        sessionsRemoved: cleanedCount,
+        remainingSessions: this.conversationalMemory.size,
+        cutoffTime: new Date(cutoffTime).toISOString()
+      });
+    }
+
+    return cleanedCount;
+  }
+
+  // Iniciar limpieza automática de memoria
+  startMemoryCleanup() {
+    setInterval(() => {
+      this.cleanOldMemory();
+    }, config.memory.cleanupInterval);
+
+    logger.info('Memory cleanup scheduler started', {
+      interval: `${config.memory.cleanupInterval / 1000}s`,
+      maxSessionAge: `${config.memory.maxSessionAge / 1000}s`
+    });
+  }
+
+  // Obtener mensaje de error amigable
+  getErrorMessage(error) {
+    if (error.name === 'GeminiError') {
+      return 'Error de conectividad con el servicio de IA. Intenta de nuevo en unos momentos.';
+    }
+    
+    if (error.message.includes('Timeout')) {
+      return 'La solicitud tardó demasiado tiempo. Intenta con una descripción más breve.';
+    }
+    
+    if (error.message.includes('Rate limit')) {
+      return 'Has realizado demasiadas solicitudes. Espera un momento antes de intentar de nuevo.';
+    }
+    
+    if (error.message.includes('API key')) {
+      return 'Error de configuración del servicio. Contacta al administrador.';
+    }
+    
+    return 'Error interno del servidor. Intenta de nuevo más tarde.';
+  }
+
+  // Método para validar si el contenido es apropiado
+  validateContentSafety(content) {
+    const inappropriatePatterns = [
+      /\b(kill|death|suicide|harm|violence)\b/gi,
+      /\b(drug|alcohol|weapon|bomb)\b/gi,
+      /\b(hate|racist|discriminat)\b/gi
+    ];
+
+    for (const pattern of inappropriatePatterns) {
+      if (pattern.test(content)) {
+        return {
+          safe: false,
+          reason: 'Contenido potencialmente inapropiado detectado'
+        };
+      }
+    }
+
+    return {
+      safe: true,
+      reason: 'Contenido validado como apropiado'
+    };
+  }
+
+  // Generar reporte de uso
+  generateUsageReport() {
+    const now = Date.now();
+    const uptimeHours = Math.round((now - this.operationStats.startTime) / 1000 / 60 / 60 * 100) / 100;
+    
+    const sessionsData = Array.from(this.conversationalMemory.entries()).map(([id, data]) => ({
+      userType: data.userType,
+      neurodiversities: data.neurodiversities,
+      outputFormat: data.outputFormat,
+      age: now - data.timestamp
+    }));
+
+    const userTypeDistribution = sessionsData.reduce((acc, session) => {
+      acc[session.userType] = (acc[session.userType] || 0) + 1;
+      return acc;
+    }, {});
+
+    const neurodiversityDistribution = {};
+    sessionsData.forEach(session => {
+      session.neurodiversities.forEach(nd => {
+        neurodiversityDistribution[nd] = (neurodiversityDistribution[nd] || 0) + 1;
+      });
+    });
+
+    const formatDistribution = sessionsData.reduce((acc, session) => {
+      acc[session.outputFormat] = (acc[session.outputFormat] || 0) + 1;
+      return acc;
+    }, {});
+
+    return {
+      reportGeneratedAt: new Date().toISOString(),
+      uptime: {
+        hours: uptimeHours,
+        startTime: new Date(this.operationStats.startTime).toISOString()
+      },
+      requests: {
+        total: this.operationStats.totalRequests,
+        successful: this.operationStats.successfulRequests,
+        failed: this.operationStats.failedRequests,
+        successRate: this.getSuccessRate(),
+        averageResponseTime: this.getAverageResponseTime()
+      },
+      gemini: {
+        calls: this.operationStats.geminiCalls,
+        errors: this.operationStats.geminiErrors,
+        successRate: this.operationStats.geminiCalls > 0 ?
+          Math.round(((this.operationStats.geminiCalls - this.operationStats.geminiErrors) / this.operationStats.geminiCalls) * 100) : 0
+      },
+      sessions: {
+        total: this.conversationalMemory.size,
+        active: sessionsData.filter(s => s.age < 60 * 60 * 1000).length,
+        userTypeDistribution,
+        neurodiversityDistribution,
+        formatDistribution
+      },
+      mostPopular: {
+        userType: Object.keys(userTypeDistribution).reduce((a, b) => 
+          userTypeDistribution[a] > userTypeDistribution[b] ? a : b, 'none'),
+        neurodiversity: Object.keys(neurodiversityDistribution).reduce((a, b) => 
+          neurodiversityDistribution[a] > neurodiversityDistribution[b] ? a : b, 'none'),
+        format: Object.keys(formatDistribution).reduce((a, b) => 
+          formatDistribution[a] > formatDistribution[b] ? a : b, 'none')
+      }
+    };
+  }
+
+  // Método para health check interno
+  async performHealthCheck() {
+    const healthStatus = {
+      timestamp: new Date().toISOString(),
+      memory: {
+        sessions: this.conversationalMemory.size,
+        heapUsed: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
+        status: this.conversationalMemory.size < 1000 ? 'healthy' : 'warning'
+      },
+      gemini: {
+        configured: !!this.model,
+        status: 'unknown'
+      },
+      operations: this.getOperationStats()
+    };
+
+    // Test rápido de Gemini si está configurado
+    if (this.model) {
+      try {
+        const testStart = Date.now();
+        await Promise.race([
+          this.model.generateContent('Test: responde "OK"'),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 3000))
+        ]);
+        
+        healthStatus.gemini.status = 'operational';
+        healthStatus.gemini.responseTime = Date.now() - testStart;
+      } catch (error) {
+        healthStatus.gemini.status = 'error';
+        healthStatus.gemini.error = error.message;
+      }
+    } else {
+      healthStatus.gemini.status = 'not_configured';
+    }
+
+    return healthStatus;
+  }
+
+  // Destructor para limpieza
+  destroy() {
+    // Limpiar todos los timers e intervalos
+    if (this.cleanupInterval) {
+      clearInterval(this.cleanupInterval);
+    }
+
+    // Limpiar memoria
+    this.conversationalMemory.clear();
+
+    logger.info('NDAssistantProcessor destroyed', {
+      finalStats: this.getOperationStats(),
+      timestamp: new Date().toISOString()
+    });
+  }
+}
+
+module.exports = NDAssistantProcessor;

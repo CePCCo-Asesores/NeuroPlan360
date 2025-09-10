@@ -1,0 +1,131 @@
+version: '3.8'
+
+services:
+  nd-assistant-backend:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    container_name: nd-assistant-backend
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3000}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - ENABLE_WEBSOCKETS=true
+      - ENABLE_ADMIN_ROUTES=true
+      - RATE_LIMIT_MAX_REQUESTS=100
+      - RATE_LIMIT_WINDOW_MS=900000
+    volumes:
+      - ./logs:/usr/src/app/logs
+      - nd-assistant-data:/usr/src/app/data
+    networks:
+      - nd-assistant-network
+    healthcheck:
+      test: ["CMD", "node", "-e", "const http = require('http'); const options = { hostname: 'localhost', port: 3001, path: '/api/health', timeout: 2000 }; const req = http.get(options, (res) => { process.exit(res.statusCode === 200 ? 0 : 1); }); req.on('error', () => process.exit(1));"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.nd-assistant.rule=Host(`api.nd-assistant.local`)"
+      - "traefik.http.routers.nd-assistant.entrypoints=web"
+      - "traefik.http.services.nd-assistant.loadbalancer.server.port=3001"
+
+  # Redis para cache y sesiones (opcional, para futuro)
+  redis:
+    image: redis:7-alpine
+    container_name: nd-assistant-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - nd-assistant-network
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-ndassistant2024}
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Nginx como reverse proxy (opcional)
+  nginx:
+    image: nginx:alpine
+    container_name: nd-assistant-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+    networks:
+      - nd-assistant-network
+    depends_on:
+      - nd-assistant-backend
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Monitoring con Prometheus (opcional)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: nd-assistant-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    networks:
+      - nd-assistant-network
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+
+  # Grafana para visualización (opcional)
+  grafana:
+    image: grafana/grafana:latest
+    container_name: nd-assistant-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin123}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+    networks:
+      - nd-assistant-network
+    depends_on:
+      - prometheus
+
+volumes:
+  nd-assistant-data:
+    driver: local
+  redis-data:
+    driver: local
+  prometheus-data:
+    driver: local
+  grafana-data:
+    driver: local
+
+networks:
+  nd-assistant-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
