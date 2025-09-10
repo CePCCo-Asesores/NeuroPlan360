@@ -94,13 +94,7 @@ const speedLimiter = slowDown({
   delayAfter: 50, // permitir 50 requests a velocidad completa
   delayMs: 500, // agregar 500ms de delay por request después del límite
   maxDelayMs: 5000, // máximo delay de 5 segundos
-  onLimitReached: (req, res, options) => {
-    logger.info(`Speed limit alcanzado para IP: ${req.ip}`, {
-      ip: req.ip,
-      currentHits: options.totalHits
-    });
-  }
-});
+  });
 
 // Configuración de Helmet para seguridad de headers
 const helmetConfig = helmet({
