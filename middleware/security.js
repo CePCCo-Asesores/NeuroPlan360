@@ -1,82 +1,103 @@
+// ==========================================
+// Middleware de Seguridad para NeuroPlan360
+// Compatible con express-rate-limit v7+
+// ==========================================
+
 const rateLimit = require('express-rate-limit');
+const slowDown = require('express-slow-down');
 const helmet = require('helmet');
-const config = require('../config');
 const logger = require('../config/logger');
 
-// Rate limiting principal
-const mainRateLimit = rateLimit({
-  windowMs: config.rateLimit.windowMs,
-  max: config.rateLimit.maxRequests,
-  standardHeaders: true,
-  legacyHeaders: false,
-  skipSuccessfulRequests: config.rateLimit.skipSuccessfulRequests,
-  keyGenerator: (req) => {
-    return req.ip || req.connection.remoteAddress || 'unknown';
+// Rate limiting general
+const generalLimiter = rateLimit({
+  windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000, // 15 minutos
+  max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 100, // máximo 100 requests por ventana
+  message: {
+    error: 'Demasiadas solicitudes desde esta IP',
+    message: 'Por favor intenta de nuevo en unos minutos',
+    retryAfter: Math.round(parseInt(process.env.RATE_LIMIT_WINDOW_MS) / 1000) || 900
   },
+  standardHeaders: true, // Incluir headers rate limit en respuesta
+  legacyHeaders: false, // Deshabilitar headers `X-RateLimit-*`
+  // onLimitReached removido en v7 - usamos handler en su lugar
   handler: (req, res) => {
-    const clientIp = req.ip || req.connection.remoteAddress;
-    
-    logger.security('Rate Limit Exceeded', clientIp, req.get('User-Agent'), {
-      endpoint: req.path,
-      method: req.method,
-      limit: config.rateLimit.maxRequests,
-      windowMs: config.rateLimit.windowMs
-    });
-
-    res.status(429).json({
-      success: false,
-      error: 'Demasiadas solicitudes',
-      details: `Máximo ${config.rateLimit.maxRequests} solicitudes por ${config.rateLimit.windowMs / 1000 / 60} minutos`,
-      retryAfter: Math.round(config.rateLimit.windowMs / 1000),
-      timestamp: new Date().toISOString()
-    });
-  },
-  onLimitReached: (req) => {
-    logger.warn('Rate limit reached', {
+    logger.warn(`Rate limit alcanzado para IP: ${req.ip}`, {
       ip: req.ip,
-      endpoint: req.path,
-      userAgent: req.get('User-Agent')
-    });
-  }
-});
-
-// Rate limiting estricto para generación de planes
-const planGenerationLimit = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutos
-  max: 10, // máximo 10 planes por 15 minutos
-  standardHeaders: true,
-  legacyHeaders: false,
-  keyGenerator: (req) => {
-    return req.ip || req.connection.remoteAddress || 'unknown';
-  },
-  handler: (req, res) => {
-    logger.security('Plan Generation Rate Limit Exceeded', req.ip, req.get('User-Agent'), {
+      userAgent: req.get('User-Agent'),
       endpoint: req.path,
       method: req.method
     });
-
+    
     res.status(429).json({
-      success: false,
-      error: 'Límite de generación excedido',
-      details: 'Máximo 10 planes por 15 minutos. Por favor, espera antes de generar más planes.',
-      retryAfter: Math.round(15 * 60),
-      timestamp: new Date().toISOString()
+      error: 'Demasiadas solicitudes desde esta IP',
+      message: 'Por favor intenta de nuevo en unos minutos',
+      retryAfter: Math.round(parseInt(process.env.RATE_LIMIT_WINDOW_MS) / 1000) || 900
     });
   }
 });
 
-// Rate limiting para admin
-const adminRateLimit = rateLimit({
+// Rate limiting específico para generación de planes ND
+const ndPlanLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutos
-  max: 20, // 20 requests para admin
-  keyGenerator: (req) => req.ip,
+  max: 10, // máximo 10 planes por ventana
+  message: {
+    error: 'Límite de generación de planes alcanzado',
+    message: 'Puedes generar hasta 10 planes cada 15 minutos',
+    retryAfter: 900
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
   handler: (req, res) => {
-    logger.security('Admin Rate Limit Exceeded', req.ip, req.get('User-Agent'));
+    logger.warn(`Rate limit ND alcanzado para IP: ${req.ip}`, {
+      ip: req.ip,
+      userAgent: req.get('User-Agent'),
+      sessionId: req.body?.sessionId
+    });
     
     res.status(429).json({
-      success: false,
-      error: 'Rate limit excedido para operaciones de administración',
-      timestamp: new Date().toISOString()
+      error: 'Límite de generación de planes alcanzado',
+      message: 'Puedes generar hasta 10 planes cada 15 minutos',
+      retryAfter: 900
+    });
+  }
+});
+
+// Rate limiting para rutas de administración
+const adminLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutos
+  max: 20, // máximo 20 requests por ventana
+  message: {
+    error: 'Límite de administración alcanzado',
+    message: 'Demasiadas operaciones administrativas',
+    retryAfter: 900
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (req, res) => {
+    logger.error(`Rate limit ADMIN alcanzado para IP: ${req.ip}`, {
+      ip: req.ip,
+      userAgent: req.get('User-Agent'),
+      endpoint: req.path
+    });
+    
+    res.status(429).json({
+      error: 'Límite de administración alcanzado',
+      message: 'Demasiadas operaciones administrativas',
+      retryAfter: 900
+    });
+  }
+});
+
+// Slow down para requests frecuentes
+const speedLimiter = slowDown({
+  windowMs: 15 * 60 * 1000, // 15 minutos
+  delayAfter: 50, // permitir 50 requests a velocidad completa
+  delayMs: 500, // agregar 500ms de delay por request después del límite
+  maxDelayMs: 5000, // máximo delay de 5 segundos
+  onLimitReached: (req, res, options) => {
+    logger.info(`Speed limit alcanzado para IP: ${req.ip}`, {
+      ip: req.ip,
+      currentHits: options.totalHits
     });
   }
 });
@@ -88,18 +109,15 @@ const helmetConfig = helmet({
       defaultSrc: ["'self'"],
       styleSrc: ["'self'", "'unsafe-inline'"],
       scriptSrc: ["'self'"],
-      connectSrc: ["'self'", "https://generativelanguage.googleapis.com"],
       imgSrc: ["'self'", "data:", "https:"],
+      connectSrc: ["'self'", "wss:", "ws:"],
       fontSrc: ["'self'"],
       objectSrc: ["'none'"],
       mediaSrc: ["'self'"],
-      frameSrc: ["'none'"]
-    }
+      frameSrc: ["'none'"],
+    },
   },
-  crossOriginEmbedderPolicy: false,
-  crossOriginResourcePolicy: {
-    policy: "cross-origin"
-  },
+  crossOriginEmbedderPolicy: false, // Permitir WebSockets
   hsts: {
     maxAge: 31536000,
     includeSubDomains: true,
@@ -107,234 +125,102 @@ const helmetConfig = helmet({
   }
 });
 
-// Middleware para prevenir ataques comunes
-const preventCommonAttacks = (req, res, next) => {
-  const clientIp = req.ip;
-  const userAgent = req.get('User-Agent') || '';
-  
-  // Detectar patrones sospechosos en User-Agent
+// Middleware para logging de seguridad
+const securityLogger = (req, res, next) => {
+  // Log de requests sospechosos
   const suspiciousPatterns = [
-    /sqlmap/i,
-    /nikto/i,
-    /nmap/i,
-    /masscan/i,
-    /nessus/i,
-    /burpsuite/i,
-    /python-requests/i,
-    /curl\/[\d.]+$/,
-    /wget/i
+    /\.\./,           // Path traversal
+    /<script/i,       // XSS attempts
+    /union.*select/i, // SQL injection
+    /javascript:/i,   // JavaScript injection
+    /vbscript:/i,     // VBScript injection
+    /onload=/i,       // Event handler injection
+    /eval\(/i,        // Code evaluation
+    /expression\(/i   // CSS expression injection
   ];
 
-  if (suspiciousPatterns.some(pattern => pattern.test(userAgent))) {
-    logger.security('Suspicious User Agent Detected', clientIp, userAgent, {
-      endpoint: req.path,
+  const fullUrl = req.protocol + '://' + req.get('host') + req.originalUrl;
+  const userAgent = req.get('User-Agent') || '';
+  const requestBody = JSON.stringify(req.body || {});
+  
+  // Verificar patrones sospechosos
+  const isSuspicious = suspiciousPatterns.some(pattern => 
+    pattern.test(fullUrl) || 
+    pattern.test(userAgent) || 
+    pattern.test(requestBody)
+  );
+
+  if (isSuspicious) {
+    logger.warn('Request sospechoso detectado', {
+      ip: req.ip,
       method: req.method,
+      url: req.originalUrl,
+      userAgent: userAgent,
+      body: req.body,
       headers: req.headers
     });
-    
-    return res.status(403).json({
-      success: false,
-      error: 'Acceso denegado',
-      timestamp: new Date().toISOString()
-    });
   }
 
-  // Verificar headers sospechosos
-  const suspiciousHeaders = ['x-forwarded-host', 'x-real-ip'];
-  for (const header of suspiciousHeaders) {
-    if (req.get(header) && !req.get(header).includes(config.server.host)) {
-      logger.security('Suspicious Header Detected', clientIp, userAgent, {
-        header,
-        value: req.get(header),
-        endpoint: req.path
-      });
-    }
+  // Log de requests a endpoints sensibles
+  const sensitiveEndpoints = ['/api/admin', '/api/export', '/api/feedback'];
+  if (sensitiveEndpoints.some(endpoint => req.originalUrl.startsWith(endpoint))) {
+    logger.info('Acceso a endpoint sensible', {
+      ip: req.ip,
+      method: req.method,
+      url: req.originalUrl,
+      userAgent: userAgent
+    });
   }
 
   next();
 };
 
-// Middleware para validar sesiones y prevenir ataques
-const sessionSecurity = (req, res, next) => {
-  const sessionId = req.body.sessionId || req.params.sessionId;
-  
-  if (sessionId) {
-    // Validar formato de sessionId
-    const sessionPattern = /^nd_session_\d+_[a-zA-Z0-9]+$/;
-    if (!sessionPattern.test(sessionId)) {
-      logger.security('Invalid Session ID Format', req.ip, req.get('User-Agent'), {
-        sessionId,
-        endpoint: req.path
-      });
-      
-      return res.status(400).json({
-        success: false,
-        error: 'Formato de sesión inválido',
-        timestamp: new Date().toISOString()
-      });
-    }
+// Middleware para validar origen de requests
+const originValidator = (req, res, next) => {
+  const allowedOrigins = [
+    process.env.FRONTEND_URL,
+    'http://localhost:3000',
+    'http://localhost:3001',
+    'https://localhost:3000',
+    'https://localhost:3001'
+  ].filter(Boolean);
 
-    // Verificar que la sesión no sea demasiado antigua (potencial replay attack)
-    const sessionTimestamp = sessionId.split('_')[2];
-    const sessionAge = Date.now() - parseInt(sessionTimestamp);
-    const maxAge = 24 * 60 * 60 * 1000; // 24 horas
+  const origin = req.get('Origin');
+  const referer = req.get('Referer');
 
-    if (sessionAge > maxAge) {
-      logger.security('Expired Session Used', req.ip, req.get('User-Agent'), {
-        sessionId,
-        sessionAge: `${Math.round(sessionAge / 1000 / 60 / 60)}h`,
-        endpoint: req.path
-      });
-      
-      return res.status(400).json({
-        success: false,
-        error: 'Sesión expirada',
-        details: 'La sesión ha expirado por razones de seguridad',
-        timestamp: new Date().toISOString()
-      });
-    }
+  // Permitir requests sin origin (como Postman, cURL)
+  if (!origin && !referer) {
+    return next();
   }
 
-  next();
-};
+  // Verificar origin permitido
+  const isAllowedOrigin = allowedOrigins.some(allowed => 
+    origin?.startsWith(allowed) || referer?.startsWith(allowed)
+  );
 
-// Middleware para logging de seguridad
-const securityLogging = (req, res, next) => {
-  const startTime = Date.now();
-  
-  // Log de request inicial
-  if (config.logging.enableRequestLogging) {
-    logger.request(req, {
-      statusCode: 'pending',
-      responseTime: 0
-    });
-  }
-
-  // Override del res.json para capturar respuestas
-  const originalJson = res.json;
-  res.json = function(data) {
-    const responseTime = Date.now() - startTime;
-    
-    // Log de respuesta
-    logger.request(req, res, responseTime);
-    
-    // Log específico para errores de seguridad
-    if (!data.success && res.statusCode >= 400) {
-      logger.security('Security Response', req.ip, req.get('User-Agent'), {
-        statusCode: res.statusCode,
-        endpoint: req.path,
-        method: req.method,
-        responseTime: `${responseTime}ms`,
-        errorType: data.error
-      });
-    }
-
-    // Performance logging para requests lentos
-    if (responseTime > 5000) {
-      logger.performance('Slow Request', responseTime, {
-        endpoint: req.path,
-        method: req.method,
-        statusCode: res.statusCode,
-        userAgent: req.get('User-Agent')
-      });
-    }
-
-    originalJson.call(this, data);
-  };
-
-  next();
-};
-
-// Middleware de autenticación simple para admin
-const adminAuth = (req, res, next) => {
-  const authHeader = req.get('Authorization');
-  const adminPassword = config.security.adminPassword;
-
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    logger.security('Admin Access Attempt - No Auth', req.ip, req.get('User-Agent'), {
-      endpoint: req.path
-    });
-    
-    return res.status(401).json({
-      success: false,
-      error: 'Autenticación requerida',
-      timestamp: new Date().toISOString()
-    });
-  }
-
-  const token = authHeader.substring(7);
-  
-  if (token !== adminPassword) {
-    logger.security('Admin Access Attempt - Wrong Password', req.ip, req.get('User-Agent'), {
-      endpoint: req.path,
-      providedToken: token.substring(0, 10) + '...'
+  if (!isAllowedOrigin && process.env.NODE_ENV === 'production') {
+    logger.warn('Request desde origen no permitido', {
+      ip: req.ip,
+      origin: origin,
+      referer: referer,
+      url: req.originalUrl
     });
     
     return res.status(403).json({
-      success: false,
-      error: 'Acceso denegado',
-      timestamp: new Date().toISOString()
+      error: 'Origen no permitido',
+      message: 'Este request no está autorizado desde este origen'
     });
   }
-
-  logger.info('Admin Access Granted', {
-    ip: req.ip,
-    endpoint: req.path,
-    userAgent: req.get('User-Agent')
-  });
 
   next();
 };
-
-// Configuración CORS personalizada
-const corsOptions = {
-  origin: (origin, callback) => {
-    // Permitir requests sin origin (apps móviles, postman, etc.)
-    if (!origin) return callback(null, true);
-    
-    if (config.frontend.allowedOrigins.includes(origin)) {
-      return callback(null, true);
-    } else {
-      logger.security('CORS Violation', null, null, {
-        origin,
-        allowedOrigins: config.frontend.allowedOrigins
-      });
-      
-      const error = new Error('No permitido por CORS');
-      error.status = 403;
-      return callback(error, false);
-    }
-  },
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
-  exposedHeaders: ['X-Total-Count', 'X-Rate-Limit-Remaining'],
-  maxAge: 86400 // 24 hours
-};
-
-// Cleanup de memoria para prevenir memory leaks
-const memoryCleanup = () => {
-  if (global.gc) {
-    global.gc();
-    logger.debug('Memory cleanup executed', {
-      memoryUsage: process.memoryUsage(),
-      timestamp: new Date().toISOString()
-    });
-  }
-};
-
-// Ejecutar cleanup cada 30 minutos
-setInterval(memoryCleanup, 30 * 60 * 1000);
 
 module.exports = {
-  mainRateLimit,
-  planGenerationLimit,
-  adminRateLimit,
+  generalLimiter,
+  ndPlanLimiter,
+  adminLimiter,
+  speedLimiter,
   helmetConfig,
-  corsOptions,
-  preventCommonAttacks,
-  sessionSecurity,
-  securityLogging,
-  adminAuth,
-  memoryCleanup
+  securityLogger,
+  originValidator
 };
