@@ -1,0 +1,37 @@
+{
+  "$schema": "https://railway.app/railway.schema.json",
+  "build": {
+    "builder": "DOCKERFILE",
+    "dockerfilePath": "Dockerfile"
+  },
+  "deploy": {
+    "numReplicas": 1,
+    "startCommand": "node server.js",
+    "healthcheckPath": "/api/health",
+    "healthcheckTimeout": 300,
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 10
+  },
+  "environments": {
+    "production": {
+      "variables": {
+        "NODE_ENV": "production",
+        "PORT": "$PORT",
+        "LOG_LEVEL": "info",
+        "ENABLE_WEBSOCKETS": "true",
+        "ENABLE_ADMIN_ROUTES": "true",
+        "RATE_LIMIT_MAX_REQUESTS": "100",
+        "RATE_LIMIT_WINDOW_MS": "900000",
+        "MEMORY_CLEANUP_INTERVAL": "3600000",
+        "MAX_SESSIONS": "1000",
+        "GEMINI_TIMEOUT_MS": "30000",
+        "GEMINI_MAX_RETRIES": "3"
+      }
+    }
+  },
+  "regions": ["us-west1"],
+  "healthcheck": {
+    "path": "/api/health",
+    "port": "$PORT"
+  }
+}
