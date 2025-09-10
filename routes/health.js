@@ -1,8 +1,5 @@
-// ==========================================
-// Health & Metrics Routes
-// Liveness 200 OK para Railway
-// Readiness separada
-// ==========================================
+// routes/health.js
+// Liveness 200 OK para Railway, readiness separado y ping a Gemini opcional por flag.
 
 const express = require('express');
 const router = express.Router();
@@ -11,7 +8,6 @@ let logger;
 try {
   logger = require('../config/logger');
 } catch {
-  // Fallback si no tienes logger aún
   logger = console;
 }
 
@@ -20,7 +16,6 @@ function formatUptime(seconds) {
   const hours = Math.floor((seconds % 86400) / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
   const secs = Math.floor(seconds % 60);
-
   if (days > 0) return `${days}d ${hours}h ${minutes}m`;
   if (hours > 0) return `${hours}h ${minutes}m ${secs}s`;
   if (minutes > 0) return `${minutes}m ${secs}s`;
@@ -39,73 +34,56 @@ function envStatus() {
 }
 
 // ------------------------------------------
-// Liveness (Railway Healthcheck → siempre 200)
+// Liveness (Railway healthcheck) — SIEMPRE 200
 // ------------------------------------------
 router.get('/health', (req, res) => {
   const { missingCore, missingOptional, readinessOk } = envStatus();
 
-  const healthData = {
+  const payload = {
     status: 'ok',
     readiness: readinessOk ? 'ready' : 'degraded',
     timestamp: new Date().toISOString(),
-    uptime: {
-      seconds: process.uptime(),
-      formatted: formatUptime(process.uptime())
-    },
-    node: {
-      version: process.version,
-      platform: process.platform,
-      arch: process.arch
-    },
-    env: {
-      nodeEnv: process.env.NODE_ENV || 'development',
-      port: process.env.PORT
-    },
+    uptime: { seconds: process.uptime(), formatted: formatUptime(process.uptime()) },
+    node: { version: process.version, platform: process.platform, arch: process.arch },
+    env: { nodeEnv: process.env.NODE_ENV || 'development', port: process.env.PORT },
     missingCore,
     missingOptional
   };
 
   if (Math.random() < 0.01) {
-    logger.debug?.('Health check performed', {
-      ip: req.ip,
-      uptime: healthData.uptime.formatted
-    });
+    logger.debug?.('Health check performed', { ip: req.ip, uptime: payload.uptime.formatted });
   }
 
-  res.status(200).json({ success: true, data: healthData });
+  res.status(200).json({ success: true, data: payload });
 });
 
 // ------------------------------------------
-// Detailed (incluye ping opcional a Gemini)
+// Detailed (Ping a Gemini opcional por flag)
 // ------------------------------------------
 router.get('/health/detailed', async (req, res) => {
   const start = Date.now();
-  let geminiStatus = 'not_configured';
+  const ENABLE_GEMINI_PING = (process.env.GEMINI_HEALTHCHECK || 'false') === 'true';
+
+  let geminiStatus = process.env.GEMINI_API_KEY ? 'configured' : 'not_configured';
   let geminiResponseTime = null;
 
   try {
-    const memoryUsage = process.memoryUsage();
-
-    if (process.env.GEMINI_API_KEY) {
-      geminiStatus = 'skipped';
-      // Si quieres activar el ping real descomenta:
-      // const { GoogleGenerativeAI } = require('@google/generative-ai');
-      // const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-      // const model = genAI.getGenerativeModel({ model: process.env.GEMINI_MODEL || 'gemini-1.5-flash' });
+    if (ENABLE_GEMINI_PING && process.env.GEMINI_API_KEY) {
+      // Ping opcional: usar servicio con timeout si lo tienes; si falla, NO reventar el endpoint.
+      // Ejemplo con lazy client (si decides activarlo):
+      // const { generateSafe } = require('../services/geminiClient');
       // const t0 = Date.now();
       // try {
-      //   await Promise.race([
-      //     model.generateContent('Health ping: responde "OK"'),
-      //     new Promise((_, rej) => setTimeout(() => rej(new Error('Timeout')), 5000))
-      //   ]);
+      //   await generateSafe('health ping', 3000);
       //   geminiStatus = 'operational';
       // } catch (e) {
-      //   geminiStatus = e.message.includes('Timeout') ? 'timeout' : 'error';
+      //   geminiStatus = e.code || 'gemini_error';
       // } finally {
       //   geminiResponseTime = Date.now() - t0;
       // }
     }
 
+    const memory = process.memoryUsage();
     const payload = {
       status: 'ok',
       timestamp: new Date().toISOString(),
@@ -116,28 +94,19 @@ router.get('/health/detailed', async (req, res) => {
       },
       system: {
         memory: {
-          rssMB: Math.round(memoryUsage.rss / 1024 / 1024),
-          heapTotalMB: Math.round(memoryUsage.heapTotal / 1024 / 1024),
-          heapUsedMB: Math.round(memoryUsage.heapUsed / 1024 / 1024)
+          rssMB: Math.round(memory.rss / 1024 / 1024),
+          heapTotalMB: Math.round(memory.heapTotal / 1024 / 1024),
+          heapUsedMB: Math.round(memory.heapUsed / 1024 / 1024)
         },
         cpu: process.cpuUsage()
       }
     };
 
-    logger.info?.('Detailed health check', {
-      ip: req.ip,
-      responseTimeMs: payload.responseTimeMs,
-      geminiStatus
-    });
-
+    logger.info?.('Detailed health check', { ip: req.ip, responseTimeMs: payload.responseTimeMs, geminiStatus });
     res.json({ success: true, data: payload });
   } catch (err) {
     logger.error?.('Detailed health error', { error: err.message, stack: err.stack });
-    res.status(503).json({
-      success: false,
-      error: 'Health check fallido',
-      data: { status: 'unhealthy', message: err.message }
-    });
+    res.status(503).json({ success: false, error: 'Health check fallido', data: { status: 'unhealthy' } });
   }
 });
 
@@ -146,51 +115,32 @@ router.get('/health/detailed', async (req, res) => {
 // ------------------------------------------
 router.get('/ready', (req, res) => {
   const { missingCore, missingOptional, readinessOk } = envStatus();
-
   if (!readinessOk) {
     return res.status(503).json({
       success: false,
       status: 'not_ready',
-      reasons: {
-        missingCore,
-        missingOptional
-      },
+      reasons: { missingCore, missingOptional },
       timestamp: new Date().toISOString(),
       uptime: process.uptime()
     });
   }
-
-  res.json({
-    success: true,
-    status: 'ready',
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime()
-  });
+  res.json({ success: true, status: 'ready', timestamp: new Date().toISOString(), uptime: process.uptime() });
 });
 
 // ------------------------------------------
-// Liveness (simple)
+// Liveness simple
 // ------------------------------------------
 router.get('/live', (_req, res) => {
-  const isAlive = process.uptime() > 0;
-  if (!isAlive) return res.status(503).json({ success: false, status: 'not_alive' });
-
-  res.json({
-    success: true,
-    status: 'alive',
-    uptime: process.uptime(),
-    pid: process.pid
-  });
+  return res.json({ success: true, status: 'alive', uptime: process.uptime(), pid: process.pid });
 });
 
 // ------------------------------------------
-// Métricas básicas (JSON o Prometheus-like)
+// Métricas (JSON o Prometheus-like)
 // ------------------------------------------
 router.get('/metrics', (req, res) => {
   try {
     const memory = process.memoryUsage();
     const cpu = process.cpuUsage();
-
     const metrics = {
       timestamp: new Date().toISOString(),
       uptime_seconds: process.uptime(),
@@ -201,15 +151,8 @@ router.get('/metrics', (req, res) => {
         external_bytes: memory.external,
         heap_usage_percent: Math.round((memory.heapUsed / memory.heapTotal) * 100)
       },
-      cpu: {
-        user_microseconds: cpu.user,
-        system_microseconds: cpu.system
-      },
-      process: {
-        pid: process.pid,
-        node: process.version,
-        platform: process.platform
-      }
+      cpu: { user_microseconds: cpu.user, system_microseconds: cpu.system },
+      process: { pid: process.pid, node: process.version, platform: process.platform }
     };
 
     if (req.query.format === 'prometheus') {
@@ -230,11 +173,7 @@ router.get('/metrics', (req, res) => {
     res.json({ success: true, data: metrics });
   } catch (err) {
     logger.error?.('Metrics error', { error: err.message });
-    res.status(500).json({
-      success: false,
-      error: 'Error obteniendo métricas',
-      timestamp: new Date().toISOString()
-    });
+    res.status(500).json({ success: false, error: 'Error obteniendo métricas', timestamp: new Date().toISOString() });
   }
 });
 
