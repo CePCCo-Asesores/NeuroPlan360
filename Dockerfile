@@ -1,51 +1,93 @@
-# Usar Node.js 18 LTS como imagen base
+# ==========================================
+# NeuroPlan360 - Dockerfile para Railway
+# Asistente Pedagógico Neurodivergente
+# ==========================================
+
+# Usar imagen oficial de Node.js Alpine (más ligera)
 FROM node:18-alpine
 
-# Establecer metadatos
-LABEL maintainer="ND Assistant Team"
-LABEL description="Backend para Asistente de Planeación Inclusiva y Neurodivergente"
+# Metadatos del contenedor
+LABEL maintainer="CePCCo-Asesores - ND Assistant Team"
 LABEL version="1.0.0"
+LABEL description="Backend para Asistente de Planeación Inclusiva y Neurodivergente"
 
-# Crear directorio de aplicación
+# Instalar dependencias del sistema necesarias
+RUN apk add --no-cache \
+    dumb-init \
+    curl \
+    tini
+
+# Crear directorio de trabajo
 WORKDIR /usr/src/app
 
-# Crear usuario no-root para seguridad
+# Crear usuario y grupo no-root para seguridad
 RUN addgroup -g 1001 -S nodejs && \
-    adduser -S ndassistant -u 1001
+    adduser -S ndassistant -u 1001 -G nodejs
 
-# Copiar archivos de dependencias
+# Copiar archivos de dependencias primero (para cache de Docker)
 COPY package*.json ./
 
-# Instalar dependencias
-RUN npm ci --only=production && \
-    npm cache clean --force
+# Configurar npm para producción
+ENV NODE_ENV=production
+ENV NPM_CONFIG_LOGLEVEL=warn
+ENV NPM_CONFIG_PROGRESS=false
+
+# Instalar dependencias de producción
+RUN npm install --production --no-optional && \
+    npm cache clean --force && \
+    rm -rf /tmp/* /var/cache/apk/*
 
 # Copiar código fuente
-COPY --chown=ndassistant:nodejs . .
+COPY . .
 
-# Crear directorio de logs con permisos correctos
-RUN mkdir -p logs && \
-    chown -R ndassistant:nodejs logs && \
-    chmod 755 logs
+# Crear estructura de directorios necesarios
+RUN mkdir -p logs temp uploads && \
+    touch logs/app.log logs/error.log logs/requests.log logs/nd-operations.log
 
-# Instalar dumb-init para manejo correcto de señales
-RUN apk add --no-cache dumb-init
+# Configurar permisos correctos
+RUN chown -R ndassistant:nodejs /usr/src/app && \
+    chmod -R 755 /usr/src/app && \
+    chmod -R 766 logs
 
 # Cambiar a usuario no-root
 USER ndassistant
 
-# Exponer puerto
-EXPOSE 3001
-
-# Variables de entorno por defecto
-ENV NODE_ENV=production
+# Configurar variables de entorno por defecto
 ENV PORT=3001
 ENV LOG_LEVEL=info
+ENV ENABLE_WEBSOCKETS=true
+ENV ENABLE_ADMIN_ROUTES=true
+ENV RATE_LIMIT_MAX_REQUESTS=100
+ENV RATE_LIMIT_WINDOW_MS=900000
+ENV MEMORY_CLEANUP_INTERVAL=3600000
+ENV MAX_SESSIONS=1000
+ENV GEMINI_TIMEOUT_MS=30000
+ENV GEMINI_MAX_RETRIES=3
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD node -e "const http = require('http'); const options = { hostname: 'localhost', port: process.env.PORT || 3001, path: '/api/health', timeout: 2000 }; const req = http.get(options, (res) => { process.exit(res.statusCode === 200 ? 0 : 1); }); req.on('error', () => process.exit(1)); req.on('timeout', () => { req.destroy(); process.exit(1); });"
+# Exponer puerto
+EXPOSE $PORT
 
-# Comando de inicio con dumb-init
-ENTRYPOINT ["dumb-init", "--"]
+# Configurar health check robusto
+HEALTHCHECK --interval=30s \
+            --timeout=10s \
+            --start-period=40s \
+            --retries=3 \
+            CMD curl -f http://localhost:$PORT/api/health || exit 1
+
+# Configurar señales de proceso para graceful shutdown
+STOPSIGNAL SIGTERM
+
+# Comando de inicio con init system para manejo correcto de señales
+ENTRYPOINT ["tini", "--"]
 CMD ["node", "server.js"]
+
+# Configuración adicional para Railway
+ENV RAILWAY_STATIC_URL=""
+ENV RAILWAY_GIT_COMMIT_SHA=""
+ENV RAILWAY_GIT_BRANCH=""
+
+# Optimizaciones de Node.js para producción
+ENV NODE_OPTIONS="--max-old-space-size=512 --optimize-for-size"
+
+# Configurar timezone
+ENV TZ=UTC
